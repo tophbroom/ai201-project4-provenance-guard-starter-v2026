@@ -40,6 +40,11 @@ DEBUG = os.getenv("AI201_DEBUG", "1") == "1" and HOST in ("127.0.0.1", "localhos
 # takes a second or two. That cost is part of what you're learning: this is
 # what running a model inline in a request actually looks like.
 
+# Longest `text` /submit will accept, in characters. Signal one only reads the
+# first DETECTOR_MAX_TOKENS tokens anyway, so this is about refusing absurd
+# input before it reaches the model, not about what gets scored.
+MAX_TEXT_CHARS = 20_000
+
 DETECTOR_MODEL = os.getenv("AI201_DETECTOR_MODEL", "gpt2")
 
 # Longer text gives a steadier reading but takes longer. 400 tokens is roughly
@@ -54,8 +59,14 @@ DETECTOR_MAX_TOKENS = 400
 # down BEFORE you code it, and to put the numbers in your README. Whatever you
 # decide, it goes here.
 
-WEIGHT_MODEL_SIGNAL = 0.5
-WEIGHT_STYLE_SIGNAL = 0.5
+WEIGHT_MODEL_SIGNAL = 0.4
+WEIGHT_STYLE_SIGNAL = 0.6
+
+# "Both must agree to accuse": if either signal is below this line, the combined
+# score can't rise above AI_THRESHOLD, so a writer is only ever labelled AI when
+# both signals lean AI. The cap sits this far under AI_THRESHOLD.
+AGREEMENT_LINE = 0.5
+AGREEMENT_CAP_MARGIN = 0.01
 
 
 # ─── Thresholds (Milestone 5) ────────────────────────────────────────────────

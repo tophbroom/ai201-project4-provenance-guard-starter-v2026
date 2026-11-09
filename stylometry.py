@@ -33,6 +33,21 @@ anything together:
 import re
 import statistics
 
+TTR_WINDOW = 100
+
+# Below this many words there isn't enough text to read a shape from.
+MIN_WORDS_FOR_STYLE = 20
+
+# How each raw measure maps to 0–1 AI-ness: the raw value that counts as fully
+# AI-ish, and the raw value that counts as fully human-ish.
+SPREAD_AI, SPREAD_HUMAN = 0.20, 0.60   # sentence-length coefficient of variation
+TTR_AI, TTR_HUMAN = 0.55, 0.85         # unique words / words, first 100 words
+PUNCT_AI, PUNCT_HUMAN = 0.02, 0.12     # non-full-stop marks per word
+
+WEIGHT_SPREAD = 0.60
+WEIGHT_TTR = 0.25
+WEIGHT_PUNCT = 0.15
+
 
 def sentences(text: str) -> list[str]:
     """Split into sentences. Rough and good enough — given to you."""
@@ -49,7 +64,7 @@ def words(text: str) -> list[str]:
 
 def sentence_length_spread(text: str) -> float:
     """
-    How much sentence length varies. ← TODO
+    How much sentence length varies.
 
     Returns:
         A float. Decide yourself what scale it's on and which direction means
@@ -64,13 +79,17 @@ def sentence_length_spread(text: str) -> float:
     `stdev` raises on fewer than two values. Decide what that should return
     before the attack set decides for you.
     """
-    # TODO: replace this
-    return 0.0
+    sentence_lengths = [len(words(s)) for s in sentences(text)]
+    sentence_lengths = [n for n in sentence_lengths if n > 0]
+    if len(sentence_lengths) < 2:
+        return 0.0  # no spread to measure; style_signal treats this as neutral
+    mean = statistics.mean(sentence_lengths)
+    return statistics.stdev(sentence_lengths) / mean
 
 
 def type_token_ratio(text: str) -> float:
     """
-    Unique words over total words. ← TODO
+    Unique words over total words.
 
     Returns:
         A float between 0 and 1. Higher means more varied vocabulary.
@@ -80,13 +99,17 @@ def type_token_ratio(text: str) -> float:
     directly comparable on it, and if your test inputs vary a lot in length,
     that alone can look like a signal.
     """
-    # TODO: replace this
-    return 0.0
+    # Only the first TTR_WINDOW words count, so a long text and a short one
+    # are compared over the same length.
+    tokens = words(text)[:TTR_WINDOW]
+    if not tokens:
+        return 0.0
+    return len(set(tokens)) / len(tokens)
 
 
 def punctuation_density(text: str) -> float:
     """
-    How much punctuation, relative to length. ← TODO
+    How much punctuation, relative to length.
 
     Returns:
         A float. Whether you count all punctuation or only some kinds — commas,
@@ -94,15 +117,20 @@ def punctuation_density(text: str) -> float:
         more interesting than full stops, because they vary more between
         writers.
     """
-    # TODO: replace this
-    return 0.0
+    tokens = words(text)
+    if not tokens:
+        return 0.0
+    # Everything except the full stop: commas, semicolons, colons, dashes,
+    # brackets, quotes, question and exclamation marks.
+    marks = re.findall(r"[,;:—–()!?\"“”-]", text)
+    return len(marks) / len(tokens)
 
 
 # ── Combining them ───────────────────────────────────────────────────────────
 
 def style_signal(text: str) -> float:
     """
-    The style signal as a 0–1 score. **Higher means more likely AI.** ← TODO
+    The style signal as a 0–1 score. **Higher means more likely AI.**
 
     Combine your three measures into one number. Same direction as
     `detector.model_signal`, so that `scoring.combine_signals` can treat them
@@ -122,8 +150,38 @@ def style_signal(text: str) -> float:
     you trust it. Plain and ordinary, not formal: formal prose reads as *human*
     to signal one, and it is plain writing that gets accused.
     """
-    # TODO: replace this
-    return 0.5
+    tokens = words(text)
+    if len(tokens) < MIN_WORDS_FOR_STYLE:
+        return 0.5  # too little text to read a shape from; say "no idea"
+
+    # Each measure becomes a 0–1 "AI-ness" score. Direction in each case:
+    #   low sentence spread   -> AI-ish (even, same-length sentences)
+    #   low vocabulary variety -> AI-ish (narrower word choice)
+    #   low punctuation        -> AI-ish (less varied marks)
+    if len(sentences(text)) < 3:
+        spread_ai = 0.5  # too few sentences to measure spread: neutral
+    else:
+        spread_ai = _scale(sentence_length_spread(text), SPREAD_AI, SPREAD_HUMAN)
+    ttr_ai = _scale(type_token_ratio(text), TTR_AI, TTR_HUMAN)
+    punct_ai = _scale(punctuation_density(text), PUNCT_AI, PUNCT_HUMAN)
+
+    score = (
+        WEIGHT_SPREAD * spread_ai
+        + WEIGHT_TTR * ttr_ai
+        + WEIGHT_PUNCT * punct_ai
+    )
+    return round(min(max(score, 0.0), 1.0), 4)
+
+
+def _scale(value: float, ai_end: float, human_end: float) -> float:
+    """
+    Map a raw measure onto 0–1 where 1 = AI-ish, linearly between two ends.
+
+    `ai_end` is the raw value that counts as fully AI-ish and `human_end` the
+    value that counts as fully human-ish. Anything beyond either end is clipped.
+    """
+    fraction = (value - ai_end) / (human_end - ai_end)
+    return 1.0 - min(max(fraction, 0.0), 1.0)
 
 
 if __name__ == "__main__":
@@ -139,4 +197,3 @@ if __name__ == "__main__":
     print(f"type_token_ratio         {type_token_ratio(text)}")
     print(f"punctuation_density      {punctuation_density(text)}")
     print(f"style_signal             {style_signal(text)}   (higher = more likely AI)")
-    print("\nAll zeros? These are stubs — Milestone 4 is where you build them.")

@@ -30,6 +30,8 @@ from flask import Flask, jsonify, request
 
 import audit
 import config
+import scoring
+import stylometry
 
 app = Flask(__name__)
 
@@ -150,12 +152,22 @@ def health():
 
 # ── YOU BUILD THIS ────────────────────────────────────────────────────────────
 
+def _reject(creator_id: str, error: str, status: int, message: str, **extra):
+    """
+    Refuse a request: log it, and answer with a JSON error and the right status.
+
+    A refused request still leaves a `rejected` entry, because an attack that
+    shows up only as an absence is one you'll never find.
+    """
+    audit.log_rejection(creator_id=creator_id, reason=error)
+    return jsonify({"error": error, "message": message, **extra}), status
+
+
 @app.post("/submit")
 # @limiter.limit(f"{config.RATE_LIMIT_PER_MINUTE}/minute;{config.RATE_LIMIT_PER_DAY}/day")
 def submit():
     """
     Take a piece of text, decide about it, log the decision, answer.
-    ← TODO — Milestones 3, 4 and 5
 
     Expects JSON:
         {"text": "...", "creator_id": "..."}
@@ -199,23 +211,77 @@ def submit():
     what should this do when `text` is missing, empty, or enormous? A crash on
     a malformed input is one of the most common real failures there is.
     """
-    payload = request.get_json(silent=True) or {}
+    import detector
 
-    # TODO: delete this and build the route.
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return _reject("anonymous", "invalid_json", 400,
+                       "The request body must be a JSON object.")
+
+    text = payload.get("text")
+    creator_id = payload.get("creator_id")
+    creator_for_log = creator_id if isinstance(creator_id, str) else "unknown"
+
+    for field, value in (("text", text), ("creator_id", creator_id)):
+        if not isinstance(value, str):
+            return _reject(creator_for_log, "missing_field", 400,
+                           f"'{field}' is required and must be a string.",
+                           field=field)
+
+    if not creator_id.strip():
+        return _reject(creator_for_log, "missing_field", 400,
+                       "'creator_id' must not be empty.", field="creator_id")
+    if not text.strip():
+        return _reject(creator_id, "empty_text", 400, "'text' must not be empty.")
+    if len(text) > config.MAX_TEXT_CHARS:
+        return _reject(creator_id, "text_too_long", 413,
+                       f"'text' is over the {config.MAX_TEXT_CHARS}-character limit.",
+                       max_characters=config.MAX_TEXT_CHARS)
+
+    # Signal one. A too-short text raises ValueError; a model that can't load
+    # raises DetectorUnavailable. Neither should become a 500.
+    try:
+        model_score = detector.model_signal(text)
+    except ValueError:
+        return _reject(creator_id, "text_too_short", 400,
+                       "That's too short to assess. Please send a few sentences.")
+    except detector.DetectorUnavailable as exc:
+        return _reject(creator_id, "detector_unavailable", 503,
+                       "The detector isn't available right now.", detail=str(exc))
+
+    content_id = str(uuid.uuid4())
+
+    style_score = stylometry.style_signal(text)
+    combined_score = scoring.combine_signals(model_score, style_score)
+
+    guess, label = scoring.score_to_label(combined_score)
+
+    audit.log_decision(
+        content_id=content_id,
+        creator_id=creator_id,
+        guess=guess,
+        model_score=model_score,
+        style_score=style_score,
+        combined_score=combined_score,
+        label=label,
+        status="decided",
+    )
+
     return jsonify({
-        "error": "not_implemented",
-        "message": "POST /submit isn't built yet — see the TODO in app.py.",
-        "you_sent": {
-            "text_length": len(payload.get("text", "")),
-            "creator_id": payload.get("creator_id"),
-        },
-    }), 501
+        "content_id": content_id,
+        "guess": guess,
+        "confidence": combined_score,
+        "label": label,
+        "model_score": model_score,
+        "style_score": style_score,
+        "status": "decided",
+    })
 
 
 @app.post("/appeal")
 def appeal():
     """
-    A writer says you got it wrong. ← TODO — Milestone 5
+    A writer says you got it wrong.
 
     Expects JSON:
         {"content_id": "...", "reasoning": "..."}
@@ -232,14 +298,39 @@ def appeal():
     to the person on the other end. It's the only thing standing between a
     wrong accusation and nothing at all.
     """
-    payload = request.get_json(silent=True) or {}
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return _reject("anonymous", "invalid_json", 400,
+                       "The request body must be a JSON object.")
 
-    # TODO: delete this and build the route.
+    content_id = payload.get("content_id")
+    reasoning = payload.get("reasoning")
+
+    for field, value in (("content_id", content_id), ("reasoning", reasoning)):
+        if not isinstance(value, str) or not value.strip():
+            return _reject("unknown", "missing_field", 400,
+                           f"'{field}' is required and must be a non-empty string.",
+                           field=field)
+
+    # The original decision is the entry for this id that isn't an event.
+    original = next(
+        (e for e in audit.entries_for(content_id) if "event" not in e), None
+    )
+    if original is None:
+        return _reject("unknown", "unknown_content_id", 404,
+                       "We couldn't find a submission with that content_id.")
+
+    audit.log_appeal(
+        content_id=content_id,
+        creator_id=original["creator_id"],  # from the decision, not the caller
+        reasoning=reasoning,
+    )
+
     return jsonify({
-        "error": "not_implemented",
-        "message": "POST /appeal isn't built yet — see the TODO in app.py.",
-        "you_sent": payload,
-    }), 501
+        "content_id": content_id,
+        "status": "under_review",
+        "message": "Thanks. We've recorded your appeal and a person will review it.",
+    })
 
 
 # ── Already works ─────────────────────────────────────────────────────────────
