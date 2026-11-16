@@ -45,6 +45,12 @@ DEBUG = os.getenv("AI201_DEBUG", "1") == "1" and HOST in ("127.0.0.1", "localhos
 # input before it reaches the model, not about what gets scored.
 MAX_TEXT_CHARS = 20_000
 
+# Unit 8 improvement: a text needs at least this many real words (letters and
+# digits) or the route refuses it with a 400 before either signal sees it.
+# Matches stylometry.MIN_WORDS_FOR_STYLE, below which signal two returns a
+# neutral 0.5.
+MIN_REAL_WORDS = 20
+
 DETECTOR_MODEL = os.getenv("AI201_DETECTOR_MODEL", "gpt2")
 
 # Longer text gives a steadier reading but takes longer. 400 tokens is roughly
@@ -103,7 +109,7 @@ AI_THRESHOLD = 0.65
 # an hour, and a script sending a thousand variations to map your thresholds.
 # Your README has to say why your numbers and not others.
 
-RATE_LIMITING_ENABLED = os.getenv("AI201_RATE_LIMITS", "0") == "1"
+RATE_LIMITING_ENABLED = True
 
 RATE_LIMIT_PER_MINUTE = 10
 RATE_LIMIT_PER_DAY = 200

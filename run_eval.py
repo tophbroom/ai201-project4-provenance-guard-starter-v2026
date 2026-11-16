@@ -24,6 +24,7 @@ back blank.
 import argparse
 import datetime as dt
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -53,7 +54,7 @@ def bodies_for(scenario):
     if scenario.get("bodies"):
         return list(scenario["bodies"])
     return [
-        {"text": text, "creator_id": f"eval_{scenario['name'][:12]}_{i}"}
+        {"text": text, "creator_id": f"eval_{re.sub(r'[^a-z0-9]+', '_', scenario['name'].lower()).strip('_')}_{i}"}
         for i, text in enumerate(scenario["texts"], 1)
     ]
 

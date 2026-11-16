@@ -164,7 +164,7 @@ def _reject(creator_id: str, error: str, status: int, message: str, **extra):
 
 
 @app.post("/submit")
-# @limiter.limit(f"{config.RATE_LIMIT_PER_MINUTE}/minute;{config.RATE_LIMIT_PER_DAY}/day")
+@limiter.limit(f"{config.RATE_LIMIT_PER_MINUTE}/minute;{config.RATE_LIMIT_PER_DAY}/day")
 def submit():
     """
     Take a piece of text, decide about it, log the decision, answer.
@@ -237,6 +237,13 @@ def submit():
         return _reject(creator_id, "text_too_long", 413,
                        f"'text' is over the {config.MAX_TEXT_CHARS}-character limit.",
                        max_characters=config.MAX_TEXT_CHARS)
+
+    # Unit 8 improvement: refuse text with too few real words (junk, emoji,
+    # one long token) before either signal sees it.
+    if len(stylometry.words(text)) < config.MIN_REAL_WORDS:
+        return _reject(creator_id, "text_too_short", 400,
+                       f"That's too short to assess. Please send at least "
+                       f"{config.MIN_REAL_WORDS} words of text.")
 
     # Signal one. A too-short text raises ValueError; a model that can't load
     # raises DetectorUnavailable. Neither should become a 500.
